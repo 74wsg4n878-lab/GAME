@@ -1,7 +1,6 @@
 import requests
 import re
-# 移除 ddddocr 导入 ↓
-# import ddddocr
+import ddddocr
 from bs4 import BeautifulSoup
 import base64
 import json
@@ -199,16 +198,14 @@ class GamemaleAutomation:
         self.session = requests.Session()
         self.formhash = None
         self.is_logged_in = False
-        # 完全移除 ddddocr 初始化 ↓
-        # 核心修改：禁用验证码识别，优先使用Cookie登录
-        print("✅ 已禁用验证码识别模块，优先使用Cookie登录")
+        self.ocr = ddddocr.DdddOcr(show_ad=False)
         
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'Referer': 'https://www.gamemale.com/forum.php',
         })
     
-    def _send_request(self, method, url,** kwargs):
+    def _send_request(self, method, url, **kwargs):
         """统一的请求发送方法，包含错误处理和日志记录"""
         try:
             response = self.session.request(method, url, **kwargs)
@@ -222,24 +219,24 @@ class GamemaleAutomation:
             raise
 
     def login(self):
-        """统一的登录管理（优先Cookie，禁用密码登录）"""
+        """统一的登录管理"""
         print("::group::登录流程")
         
         login_successful = False
-        # 优先使用Cookie登录（唯一可靠方式）
         if self.config.get("gamemale", {}).get("cookie"):
             if self._login_with_cookie():
                 print("✅ Cookie 登录成功")
                 login_successful = True
-        else:
-            print("::error::未配置Cookie，且已禁用密码登录（无验证码识别）")
         
-        # 完全禁用密码登录（避免触发验证码识别）
-        if not login_successful:
-            print("❌ Cookie登录失败，且无法使用密码登录（无验证码识别）")
-        else:
+        if not login_successful and self._login_with_password():
+            print("✅ 密码登录成功") 
+            login_successful = True
+        
+        if login_successful:
             self.is_logged_in = True
             self.get_and_store_formhash()
+        else:
+            print("❌ 所有登录方式均失败")
         
         print("::endgroup::")
         return self.is_logged_in
@@ -273,10 +270,114 @@ class GamemaleAutomation:
             print(f"::warning::Cookie登录验证过程中出错: {e}")
             return False
 
-    # 完全移除密码登录相关方法 ↓
-    # def _login_with_password(self): ...
-    # def _get_login_parameters(self): ...
-    # def _recognize_captcha_ddddocr(self): ...
+    def _login_with_password(self):
+        """使用密码进行登录"""
+        gamemale_config = self.config.get("gamemale", {})
+        username = gamemale_config.get("username")
+        password = gamemale_config.get("password")
+
+        if not all([username, password]):
+            print("::warning::密码登录所需信息不完整 (用户名或密码缺失)。")
+            return False
+        
+        max_retries = 8
+        for attempt in range(max_retries):
+            print(f"\n尝试密码登录 ({attempt + 1}/{max_retries})...")
+            
+            try:
+                loginhash, formhash, seccodehash, seccode_verify = self._get_login_parameters()
+                
+                if not all([loginhash, formhash, seccodehash, seccode_verify]):
+                    raise ValueError("获取登录参数失败")
+
+                login_url = f"https://www.gamemale.com/member.php?mod=logging&action=login&loginsubmit=yes&handlekey=login&loginhash={loginhash}&inajax=1"
+                payload = {
+                    'formhash': formhash,
+                    'referer': 'https://www.gamemale.com/forum.php',
+                    'loginfield': 'username',
+                    'username': username,
+                    'password': password,
+                    'questionid': gamemale_config.get("questionid", "0"),
+                    'answer': gamemale_config.get("answer", ""),
+                    'seccodehash': seccodehash,
+                    'seccodeverify': seccode_verify
+                }
+                
+                login_response = self._send_request('POST', login_url, data=payload, headers={'X-Requested-With': 'XMLHttpRequest'})
+                if 'succeed' in login_response.text or '欢迎您回来' in login_response.text:
+                    return True
+                else:
+                    error_match = re.search(r'<!\[CDATA\[(.*?)(?:<script|\]\])', login_response.text)
+                    raise ValueError(error_match.group(1).strip() if error_match else "未知登录错误")
+            
+            except Exception as e:
+                print(f"登录尝试失败: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(random.uniform(2, 5))
+        
+        return False
+
+    def _get_login_parameters(self):
+        """获取登录所需的动态参数和验证码"""
+        ajax_headers = {'X-Requested-With': 'XMLHttpRequest'}
+        login_popup_url = 'https://www.gamemale.com/member.php?mod=logging&action=login&infloat=yes&handlekey=login&inajax=1'
+        response = self._send_request('GET', login_popup_url, headers=ajax_headers)
+        
+        html_content_match = re.search(r'<!\[CDATA\[(.*)\]\]>', response.text, re.DOTALL)
+        if not html_content_match:
+            # 增加日志，帮助调试
+            print("::warning::在 _get_login_parameters 中未能从响应中提取到 CDATA 内容。")
+            print(f"::debug::响应文本预览: {response.text[:500]}")
+            raise ValueError("无法从登录弹窗响应中提取HTML内容。")
+        html_content = html_content_match.group(1)
+
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        action_tag = soup.find('form', {'name': 'login'})
+        if not action_tag or not action_tag.has_attr('action'):
+             raise ValueError("未找到登录表单的action URL。")
+        action_url = action_tag['action']
+
+        loginhash_match = re.search(r'loginhash=(\w+)', action_url)
+        if not loginhash_match:
+            raise ValueError("未找到loginhash。")
+        loginhash = loginhash_match.group(1)
+
+        formhash_tag = soup.find('input', {'name': 'formhash'})
+        if not formhash_tag or not formhash_tag.has_attr('value'):
+            raise ValueError("未找到formhash。")
+        formhash = formhash_tag['value']
+
+        seccodehash_match = re.search(r"updateseccode\('([a-zA-Z0-9]+)'", html_content)
+        if not seccodehash_match:
+            raise ValueError("未找到seccodehash。")
+        seccodehash = seccodehash_match.group(1)
+        
+        js_url = f"https://www.gamemale.com/misc.php?mod=seccode&action=update&idhash={seccodehash}&inajax=1"
+        js_response = self._send_request('GET', js_url, headers=ajax_headers)
+        img_path_match = re.search(r'src="([^"]+mod=seccode[^"]+)"', js_response.text)
+        if not img_path_match:
+            raise ValueError("无法解析验证码URL。")
+        
+        img_path = img_path_match.group(1).replace('&', '&')
+        img_url = "https://www.gamemale.com/" + img_path
+        img_response = self._send_request('GET', img_url)
+        
+        seccode_verify = self._recognize_captcha_ddddocr(img_response.content)
+        if not seccode_verify:
+            raise ValueError("验证码识别失败")
+
+        return loginhash, formhash, seccodehash, seccode_verify
+
+    def _recognize_captcha_ddddocr(self, image_bytes):
+        """使用 ddddocr 识别验证码"""
+        try:
+            res = self.ocr.classification(image_bytes)
+            print(f"ddddocr 识别结果: {res}")
+            return res
+        except Exception as e:
+            print(f"::warning::ddddocr 识别验证码失败: {e}")
+            return None
 
     def get_and_store_formhash(self):
         """一次性获取并存储 formhash，供所有任务复用"""
@@ -372,7 +473,7 @@ class GamemaleAutomation:
             if '已签' in text:
                 print("ℹ️ 今日已签到")
                 return True
-            print(f"⚠ 签到状态未知: {text[:100]}")
+            print(f"⚠ 签到状态未知")
             return False
         except Exception as e:
             print(f"❌ 签到失败: {e}")
@@ -427,9 +528,7 @@ class GamemaleAutomation:
                 if self.session.head(url, allow_redirects=True).status_code == 200:
                     success += 1
                 time.sleep(1)
-            except Exception as e:
-                print(f"访问UID {uid} 失败: {e}")
-                pass
+            except: pass
         print(f"  ✅ 空间访问: {success}/{len(user_ids)} 成功")
         print("::endgroup::")
         return success > 0
@@ -488,7 +587,7 @@ class GamemaleAutomation:
                     print(f"✅ 对 UID: {uid} 打招呼成功！")
                     success_count += 1
                 else:
-                    print(f"❌ 对 UID: {uid} 打招呼失败，响应: {post_response.text[:200]}")
+                    print(f"❌ 对 UID: {uid} 打招呼失败")
             except Exception as e:
                 print(f"❌ 对 UID: {uid} 打招呼时发生异常: {e}")
             finally:
@@ -531,8 +630,6 @@ class GamemaleAutomation:
                 return credits_data, None
 
             blood_value_str = credits_data.get("血液", "0 滴").split()[0]
-            # 处理千分位逗号
-            blood_value_str = blood_value_str.replace(',', '')
             blood_value = int(blood_value_str)
             
             if blood_value > 34:
@@ -652,21 +749,18 @@ class GamemaleAutomation:
 
 def main():
     """主程序"""
-    # 全局异常捕获
-    config = None
     try:
         config = load_config()
         
         gamemale_config = config.get("gamemale", {})
-        # 强制要求配置Cookie（禁用密码登录）
-        if not gamemale_config.get("cookie"):
-            print("::error::错误：必须配置 gamemale.cookie（已禁用密码登录）。")
+        if not gamemale_config.get("cookie") and not (gamemale_config.get("username") and gamemale_config.get("password")):
+            print("::error::错误：必须配置 gamemale.cookie 或 (gamemale.username 和 gamemale.password)。")
             exit(1)
 
         client = GamemaleAutomation(config)
         
         if not client.login():
-            raise Exception("Cookie登录失败")
+            raise Exception("登录失败")
         
         detailed_report = client.execute_all_tasks()
         
@@ -684,8 +778,7 @@ def main():
     except Exception as e:
         error_message = f"❌ 脚本执行失败: {e}"
         print(error_message)
-        if config:
-            send_notification(config, error_message)
+        send_notification(config, error_message)
         exit(1)
 
 if __name__ == "__main__":
