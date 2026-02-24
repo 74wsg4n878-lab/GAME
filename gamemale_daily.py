@@ -6,153 +6,104 @@ import json
 import time
 import random
 import os
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 
-# --- 核心配置加载逻辑 ---
 def load_config():
-    """
-    智能加载：优先扫描 ACCOUNT_1 到 ACCOUNT_10 变量。
-    不再强制要求 APP_CONFIG_JSON 存在。
-    """
     all_accounts = []
-    
-    # 1. 扫描 1-10 号账户变量
     for i in range(1, 11):
         acc_str = os.environ.get(f"ACCOUNT_{i}")
         if acc_str and acc_str.strip():
             try:
-                acc_data = json.loads(acc_str)
-                all_accounts.append(acc_data)
-                print(f"::notice::[账号扫描] 成功识别变量 ACCOUNT_{i}")
-            except Exception as e:
-                print(f"::error::[账号扫描] ACCOUNT_{i} 格式错误 (需要JSON): {e}")
-
-    # 2. 读取通知配置 (可选)
-    notification = {"enabled": True, "type": "console"}
-    app_config_str = os.environ.get("APP_CONFIG_JSON")
-    if app_config_str:
-        try:
-            data = json.loads(app_config_str)
-            if "notification" in data:
-                notification = data["notification"]
-            # 兼容旧格式的账号数据
-            if "gamemale" in data:
-                acc_part = data["gamemale"]
-                if isinstance(acc_part, list): all_accounts.extend(acc_part)
-                else: all_accounts.append(acc_part)
-        except:
-            print("::warning::APP_CONFIG_JSON 存在但解析失败，将使用默认控制台输出。")
-
-    # 3. 终极检查
+                all_accounts.append(json.loads(acc_str))
+            except:
+                pass
     if not all_accounts:
-        print("::error::错误：未找到任何账号配置！")
-        print("请检查 GitHub Secrets 中是否添加了 ACCOUNT_1 (内容为 JSON 格式)。")
+        print("::error::未找到配置，请检查 Secrets 是否包含 ACCOUNT_1")
         exit(1)
+    return all_accounts
 
-    return {"accounts": all_accounts, "notification": notification}
-
-# --- 通知发送函数 ---
-def send_notification(config, message):
-    notif_cfg = config.get("notification", {})
-    if not notif_cfg.get("enabled", False): return
-    
-    ntype = notif_cfg.get("type", "console")
-    try:
-        if ntype == "telegram":
-            tg = notif_cfg.get("telegram", {})
-            requests.post(f"https://api.telegram.org/bot{tg.get('bot_token')}/sendMessage", 
-                          json={"chat_id": tg.get('chat_id'), "text": message}, timeout=10)
-        elif ntype == "wechat":
-            requests.post(notif_cfg.get("wechat", {}).get("webhook"), 
-                          json={"msgtype": "text", "text": {"content": message}}, timeout=10)
-        elif ntype == "email":
-            mail = notif_cfg.get("email", {})
-            msg = MIMEMultipart(); msg['Subject'] = "Gamemale 任务汇总"; msg.attach(MIMEText(message, 'plain', 'utf-8'))
-            server = smtplib.SMTP(mail["smtp_server"], mail.get("smtp_port", 587)); server.starttls()
-            server.login(mail["username"], mail["password"])
-            server.sendmail(mail["from"], mail["to"], msg.as_string()); server.quit()
-        else:
-            print(f"\n--- 任务汇总报告 ---\n{message}")
-    except Exception as e:
-        print(f"通知发送失败: {e}")
-
-# --- 互动逻辑 ---
-def interact_with_blogs_regex(session, target=10):
-    uids = set(); page = 1
-    while len(uids) < target and page <= 5:
-        try:
-            res = session.get(f'https://www.gamemale.com/home.php?mod=space&do=blog&view=all&page={page}')
-            links = re.findall(r'href="([^"]*blog-\d+-\d+\.html[^"]*)"', res.text)
-            for link in links:
-                if len(uids) >= target: break
-                full_url = "https://www.gamemale.com/" + link.lstrip('/')
-                uid_m = re.search(r'blog-(\d+)-', full_url)
-                if not uid_m: continue
-                uid = uid_m.group(1)
-                blog_page = session.get(full_url).text
-                btn = BeautifulSoup(blog_page, 'html.parser').select_one('a[id*="click_blogid_"][id$="_1"]')
-                if btn:
-                    c_url = "https://www.gamemale.com/" + btn.get('href').lstrip('/') + '&inajax=1'
-                    if 'succeed' in session.get(c_url, headers={'X-Requested-With': 'XMLHttpRequest'}).text:
-                        uids.add(uid)
-                        time.sleep(random.uniform(2, 4))
-        except: break
-        page += 1
-    return list(uids)
-
-# --- 自动化类 ---
 class GamemaleAutomation:
-    def __init__(self, acc_cfg, global_cfg):
-        self.acc = acc_cfg
-        self.global_cfg = global_cfg
+    def __init__(self, acc):
+        self.acc = acc
+        self.username = acc.get("username")
+        self.password = acc.get("password")
         self.session = requests.Session()
         self.formhash = None
-        self.session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+        self.ocr = ddddocr.DdddOcr(show_ad=False)
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        })
 
-    def login(self):
+    def login_by_cookie(self):
+        """尝试用 Cookie 登录"""
         cookie = self.acc.get("cookie")
-        if cookie:
-            for item in cookie.split(';'):
-                if '=' in item:
-                    k, v = item.strip().split('=', 1)
-                    self.session.cookies.set(k, v, domain='www.gamemale.com')
-            res = self.session.get('https://www.gamemale.com/home.php?mod=spacecp')
-            if 'formhash' in res.text:
-                self.formhash = re.search(r'formhash" value="([a-f0-9]+)"', res.text).group(1)
-                return True
+        if not cookie: return False
+        for item in cookie.split(';'):
+            if '=' in item:
+                k, v = item.strip().split('=', 1)
+                self.session.cookies.set(k, v, domain='www.gamemale.com')
+        res = self.session.get('https://www.gamemale.com/home.php?mod=spacecp')
+        if 'formhash' in res.text:
+            self.formhash = re.search(r'formhash" value="([a-f0-9]+)"', res.text).group(1)
+            return True
         return False
 
-    def run_tasks(self):
-        msg = []
-        # 签到
-        res_s = self.session.get(f"https://www.gamemale.com/k_misign-sign.html?operation=qiandao&format=button&formhash={self.formhash}").text
-        msg.append(f"✅ 签到: {'成功' if 'succeed' in res_s or '已签' in res_s else '失败'}")
-        # 互动
-        count = len(interact_with_blogs_regex(self.session, 10))
-        msg.append(f"📊 震惊互动: 成功 {count} 次")
-        return "\n".join(msg)
-
-# --- 主入口 ---
-def main():
-    config = load_config()
-    summary = []
-    for idx, acc in enumerate(config["accounts"]):
-        user = acc.get("username", f"账号_{idx+1}")
-        client = GamemaleAutomation(acc, config)
+    def login_by_password(self):
+        """尝试用账号密码登录 (识别验证码)"""
         try:
-            if client.login():
-                report = client.run_tasks()
-                summary.append(f"👤 {user}:\n{report}")
-            else:
-                summary.append(f"👤 {user}: ❌ 登录失败 (Cookie失效)")
-        except Exception as e:
-            summary.append(f"👤 {user}: 💥 运行异常")
-        time.sleep(5)
-    
-    final_report = "Gamemale 每日自动任务汇总：\n\n" + "\n\n".join(summary)
-    send_notification(config, final_report)
+            # 1. 初始化登录页
+            init_res = self.session.get('https://www.gamemale.com/member.php?mod=logging&action=login&infloat=yes&inajax=1')
+            login_hash = re.search(r'loginform_(\w+)', init_res.text).group(1)
+            
+            # 2. 验证码识别
+            seccode_res = self.session.get(f'https://www.gamemale.com/misc.php?mod=seccode&action=update&idhash={login_hash}&{random.random()}')
+            code_url_match = re.search(r'src="([^"]+seccode[^"]+)"', seccode_res.text)
+            seccode_text = ""
+            if code_url_match:
+                img_res = self.session.get('https://www.gamemale.com/' + code_url_match.group(1))
+                seccode_text = self.ocr.classification(img_res.content)
+            
+            # 3. 提交
+            post_data = {
+                'formhash': re.search(r'formhash" value="([a-f0-9]+)"', init_res.text).group(1),
+                'username': self.username,
+                'password': self.password,
+                'questionid': self.acc.get("questionid", "0"),
+                'answer': self.acc.get("answer", ""),
+                'seccodeverify': seccode_text
+            }
+            post_url = f'https://www.gamemale.com/member.php?mod=logging&action=login&loginsubmit=yes&loginhash={login_hash}&inajax=1'
+            login_res = self.session.post(post_url, data=post_data)
+            
+            if '欢迎您回来' in login_res.text:
+                space_res = self.session.get('https://www.gamemale.com/home.php?mod=spacecp')
+                self.formhash = re.search(r'formhash" value="([a-f0-9]+)"', space_res.text).group(1)
+                return True
+        except:
+            pass
+        return False
+
+    def run(self):
+        print(f"正在处理: {self.username}")
+        # 策略：优先密码登录，失败则用 Cookie
+        if self.login_by_password():
+            print("🔑 账号密码登录成功")
+        elif self.login_by_cookie():
+            print("🍪 Cookie 登录成功")
+        else:
+            print("❌ 登录失败，请检查账号密码或 Cookie")
+            return
+
+        # 签到
+        self.session.get(f"https://www.gamemale.com/k_misign-sign.html?operation=qiandao&format=button&formhash={self.formhash}")
+        # 抽奖
+        self.session.get(f"https://www.gamemale.com/plugin.php?id=it618_award:ajax&ac=getaward&formhash={self.formhash}")
+        print(f"✨ {self.username} 任务执行完毕")
+
+def main():
+    accounts = load_config()
+    for acc in accounts:
+        GamemaleAutomation(acc).run()
+        time.sleep(10)
 
 if __name__ == "__main__":
     main()
