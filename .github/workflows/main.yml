@@ -8,7 +8,7 @@ on:
     # 支持在 Actions 页面手动点击按钮运行
 
 jobs:
-  run-daily-task:
+  run-script:
     runs-on: ubuntu-latest
 
     steps:
@@ -23,17 +23,15 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # 确保你的 requirements.txt 包含 requests, beautifulsoup4, ddddocr
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          # 如果没有文件，直接手动安装
+          # 兜底安装必备库
           pip install requests beautifulsoup4 ddddocr
 
       - name: Run daily script
         env:
-          # 1. 映射通知配置（包含推送开关、SMTP、TG或企业微信配置）
+          # 保留通知配置（如果有的话）
           APP_CONFIG_JSON: ${{ secrets.APP_CONFIG_JSON }}
-
-          # 2. 映射 10 个独立的账号配置
+          # 映射 10 个独立的账号变量
           ACCOUNT_1: ${{ secrets.ACCOUNT_1 }}
           ACCOUNT_2: ${{ secrets.ACCOUNT_2 }}
           ACCOUNT_3: ${{ secrets.ACCOUNT_3 }}
