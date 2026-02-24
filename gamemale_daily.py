@@ -12,10 +12,11 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 # --- 配置加载与通知函数 ---
-def load_config():
+def load_config(required=True):
     """
     加载配置.
     优先级: 环境变量 APP_CONFIG_JSON > 本地 config.json 文件.
+    若 required=False，找不到配置时返回空 dict 而非退出。
     """
     config_json_str = os.environ.get("APP_CONFIG_JSON")
     if config_json_str:
@@ -34,6 +35,10 @@ def load_config():
             except json.JSONDecodeError:
                 print("::error::本地 config.json 文件格式无效。")
                 exit(1)
+
+    if not required:
+        print("::notice::未找到 APP_CONFIG_JSON 或 config.json，将使用空基础配置（多账号模式）。")
+        return {}
 
     print("::error::错误：未找到配置。请设置 APP_CONFIG_JSON 环境变量或创建 config.json 文件。")
     exit(1)
