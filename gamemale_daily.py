@@ -834,11 +834,11 @@ def run_single_account(config, account_label=""):
 def main():
     """主程序"""
     try:
-        # 1. 加载基础配置（用于通知设置等公共项）
-        base_config = load_config()
-
-        # 2. 扫描 ACCOUNT_1 ~ ACCOUNT_10 环境变量
+        # 1. 扫描 ACCOUNT_1 ~ ACCOUNT_10 环境变量（优先判断，决定加载模式）
         accounts_from_env = load_accounts_from_env()
+
+        # 2. 加载基础配置：多账号模式下非必须，单账号模式下必须
+        base_config = load_config(required=len(accounts_from_env) == 0)
 
         # 3. 决定运行模式
         if accounts_from_env:
