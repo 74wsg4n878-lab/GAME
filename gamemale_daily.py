@@ -7,7 +7,7 @@ import random
 import os
 
 def load_config():
-    """从 Secrets 加载 ACCOUNT_1 到 ACCOUNT_10"""
+    """扫描 GitHub Secrets 中的 ACCOUNT_1 到 ACCOUNT_10"""
     all_accounts = []
     for i in range(1, 11):
         acc_str = os.environ.get(f"ACCOUNT_{i}")
@@ -15,10 +15,10 @@ def load_config():
             try:
                 all_accounts.append(json.loads(acc_str))
                 print(f"::notice::[配置] 成功加载 ACCOUNT_{i}")
-            except Exception as e:
-                print(f"::error::[配置] ACCOUNT_{i} 格式错误: {e}")
+            except:
+                print(f"::error::[配置] ACCOUNT_{i} 格式错误")
     if not all_accounts:
-        print("::error::未找到配置，请检查 GitHub Secrets 是否包含 ACCOUNT_1")
+        print("::error::未找到配置，请检查 Secrets 是否包含 ACCOUNT_1")
         exit(1)
     return all_accounts
 
@@ -36,14 +36,17 @@ class GamemaleAutomation:
         })
 
     def login_by_cookie(self):
-        """尝试 Cookie 登录"""
+        """【优先级 1】尝试 Cookie 登录"""
         cookie = self.acc.get("cookie")
         if not cookie: return False
         try:
+            # 这里的 Cookie 处理支持多种格式
             for item in cookie.split(';'):
                 if '=' in item:
                     k, v = item.strip().split('=', 1)
                     self.session.cookies.set(k, v, domain='www.gamemale.com')
+            
+            # 访问个人设置页验证 Cookie 是否有效
             res = self.session.get('https://www.gamemale.com/home.php?mod=spacecp', timeout=20)
             if 'formhash' in res.text:
                 self.formhash = re.search(r'formhash" value="([a-f0-9]+)"', res.text).group(1)
@@ -53,10 +56,11 @@ class GamemaleAutomation:
         return False
 
     def login_by_password(self):
-        """尝试密码登录 (ddddocr 识别)"""
+        """【优先级 2】Cookie 失效时尝试账号密码登录"""
         if not self.username or not self.password: return False
         try:
-            # 1. 获取登录参数
+            print(f"🔄 [{self.username}] Cookie 已失效，正在尝试账号密码登录...")
+            # 1. 获取登录 loginhash
             init_res = self.session.get('https://www.gamemale.com/member.php?mod=logging&action=login&infloat=yes&inajax=1', timeout=20)
             login_hash = re.search(r'loginform_(\w+)', init_res.text).group(1)
             init_formhash = re.search(r'formhash" value="([a-f0-9]+)"', init_res.text).group(1)
@@ -70,7 +74,6 @@ class GamemaleAutomation:
             if code_url_match:
                 img_res = self.session.get('https://www.gamemale.com/' + code_url_match.group(1), timeout=20)
                 seccode_text = self.ocr.classification(img_res.content)
-                print(f"🔍 [{self.username}] 验证码识别结果: {seccode_text}")
             
             # 3. 提交登录
             post_data = {
@@ -89,37 +92,36 @@ class GamemaleAutomation:
                 self.formhash = re.search(r'formhash" value="([a-f0-9]+)"', space_res.text).group(1)
                 return True
         except Exception as e:
-            print(f"⚠️ [{self.username}] 密码登录异常: {e}")
+            print(f"⚠️ [{self.username}] 账号登录异常: {e}")
         return False
 
     def run(self):
-        print(f"\n▶️ 正在处理: {self.username}")
-        # 策略：优先密码登录 (更持久)，失败则用 Cookie (更快)
-        if self.login_by_password():
-            print(f"🔑 [{self.username}] 密码登录成功")
-        elif self.login_by_cookie():
-            print(f"🍪 [{self.username}] Cookie 登录成功")
+        print(f"\n▶️ 正在处理账号: {self.username}")
+        # 执行优先级策略
+        if self.login_by_cookie():
+            print(f"🍪 [{self.username}] Cookie 登录成功 (优先模式)")
+        elif self.login_by_password():
+            print(f"🔑 [{self.username}] 账号密码登录成功 (补救模式)")
         else:
-            print(f"❌ [{self.username}] 登录失败，请检查配置")
+            print(f"❌ [{self.username}] 所有登录方式均失效，请检查 Secret 配置")
             return
 
         # 执行任务
         try:
             # 签到
-            sign_res = self.session.get(f"https://www.gamemale.com/k_misign-sign.html?operation=qiandao&format=button&formhash={self.formhash}", timeout=20)
+            self.session.get(f"https://www.gamemale.com/k_misign-sign.html?operation=qiandao&format=button&formhash={self.formhash}", timeout=20)
             # 抽奖
-            draw_res = self.session.get(f"https://www.gamemale.com/plugin.php?id=it618_award:ajax&ac=getaward&formhash={self.formhash}", timeout=20)
-            
-            print(f"✨ [{self.username}] 每日任务尝试完毕")
+            self.session.get(f"https://www.gamemale.com/plugin.php?id=it618_award:ajax&ac=getaward&formhash={self.formhash}", timeout=20)
+            print(f"✨ [{self.username}] 每日任务已尝试提交")
         except Exception as e:
             print(f"❌ [{self.username}] 任务执行出错: {e}")
 
 def main():
     accounts = load_config()
     for acc in accounts:
-        GamemaleAutomation(acc).run()
-        # 随机延迟防止被封
-        time.sleep(random.uniform(10, 20))
+        bot = GamemaleAutomation(acc)
+        bot.run()
+        time.sleep(random.uniform(5, 10))
 
 if __name__ == "__main__":
     main()
