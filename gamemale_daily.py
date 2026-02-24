@@ -109,7 +109,7 @@ def interact_with_blogs_regex(session, target_interactions=10, max_pages_to_scan
         try:
             base_blog_list_url = 'https://www.gamemale.com/home.php?mod=space&do=blog&view=all'
             current_url = f"{base_blog_list_url}&page={page_num}"
-            response = session.get(current_url)
+            response = session.get(current_url, timeout=15)
             response.raise_for_status()
             
             href_matches = re.findall(r'href="([^"]*blog-\d+-\d+\.html[^"]*)"', response.text)
@@ -136,7 +136,7 @@ def interact_with_blogs_regex(session, target_interactions=10, max_pages_to_scan
                     uid = uid_match.group(1)
                     processed_user_ids.add(uid)
                     
-                    page_response = session.get(full_url)
+                    page_response = session.get(full_url, timeout=15)
                     page_response.raise_for_status()
                     page_text = page_response.text
                     
@@ -155,7 +155,7 @@ def interact_with_blogs_regex(session, target_interactions=10, max_pages_to_scan
                         click_url = "https://www.gamemale.com/" + click_url.lstrip('/')
 
                     ajax_headers = {'Referer': full_url, 'X-Requested-With': 'XMLHttpRequest'}
-                    click_response = session.get(click_url, headers=ajax_headers)
+                    click_response = session.get(click_url, headers=ajax_headers, timeout=15)
                     response_text = click_response.text.strip()
 
                     if 'succeed' in response_text or '表态成功' in response_text:
@@ -166,7 +166,7 @@ def interact_with_blogs_regex(session, target_interactions=10, max_pages_to_scan
                     else:
                         print(f"    -> ❓ 响应内容未知，跳过。 (作者UID: {uid})")
 
-                    time.sleep(random.uniform(2, 5))
+                    time.sleep(random.uniform(0.5, 1.5))
 
                     if len(successful_user_ids) >= target_interactions:
                         print(f"🎉 已完成 {target_interactions} 次成功互动目标！")
@@ -212,6 +212,7 @@ class GamemaleAutomation:
     
     def _send_request(self, method, url, **kwargs):
         """统一的请求发送方法，包含错误处理和日志记录"""
+        kwargs.setdefault('timeout', 20)
         try:
             response = self.session.request(method, url, **kwargs)
             response.raise_for_status()
@@ -261,7 +262,7 @@ class GamemaleAutomation:
 
         try:
             test_url = 'https://www.gamemale.com/home.php?mod=space&do=profile'
-            response = self.session.get(test_url, allow_redirects=False)
+            response = self.session.get(test_url, allow_redirects=False, timeout=15)
 
             if response.status_code == 200 and '登录' not in response.text:
                 # 如果提供了用户名，则额外验证用户名是否存在于页面中
@@ -285,7 +286,7 @@ class GamemaleAutomation:
             print("::warning::密码登录所需信息不完整 (用户名或密码缺失)。")
             return False
         
-        max_retries = 8
+        max_retries = 3
         for attempt in range(max_retries):
             print(f"\n尝试密码登录 ({attempt + 1}/{max_retries})...")
             
@@ -318,7 +319,7 @@ class GamemaleAutomation:
             except Exception as e:
                 print(f"登录尝试失败: {e}")
                 if attempt < max_retries - 1:
-                    time.sleep(random.uniform(2, 5))
+                    time.sleep(random.uniform(1, 2))
         
         return False
 
@@ -328,19 +329,24 @@ class GamemaleAutomation:
         login_popup_url = 'https://www.gamemale.com/member.php?mod=logging&action=login&infloat=yes&handlekey=login&inajax=1'
         response = self._send_request('GET', login_popup_url, headers=ajax_headers)
         
+        print(f"[DEBUG] 登录弹窗响应状态码: {response.status_code}")
+        print(f"[DEBUG] 响应前500字符: {response.text[:500]}")
         html_content_match = re.search(r'<!\[CDATA\[(.*)\]\]>', response.text, re.DOTALL)
         if not html_content_match:
-            # 增加日志，帮助调试
-            print("::warning::在 _get_login_parameters 中未能从响应中提取到 CDATA 内容。")
-            print(f"::debug::响应文本预览: {response.text[:500]}")
+            print(f"[DEBUG] 未找到CDATA，完整响应({len(response.text)}字符): {response.text[:2000]}")
             raise ValueError("无法从登录弹窗响应中提取HTML内容。")
         html_content = html_content_match.group(1)
 
         soup = BeautifulSoup(html_content, 'html.parser')
         
-        action_tag = soup.find('form', {'name': 'login'})
-        if not action_tag or not action_tag.has_attr('action'):
-             raise ValueError("未找到登录表单的action URL。")
+        # 尝试多种方式找登录表单
+        action_tag = soup.find('form', {'name': 'login'}) or soup.find('form', id='loginform') or soup.find('form')
+        if not action_tag:
+            print(f"::warning::未找到任何表单，CDATA内容预览:\n{html_content[:1000]}")
+            raise ValueError("未找到登录表单。")
+        if not action_tag.has_attr('action'):
+            print(f"::warning::表单无action属性，表单HTML: {str(action_tag)[:500]}")
+            raise ValueError("未找到登录表单的action URL。")
         action_url = action_tag['action']
 
         loginhash_match = re.search(r'loginhash=(\w+)', action_url)
@@ -427,7 +433,7 @@ class GamemaleAutomation:
         for name, func in tasks:
             print(f"🔄 执行任务: {name}")
             task_results[name] = func()
-            time.sleep(random.uniform(1, 2))
+            time.sleep(random.uniform(0.5, 1))
         
         print("🔄 执行任务: 震惊互动")
         successful_uids, processed_uids = interact_with_blogs_regex(self.session, 10)
@@ -530,9 +536,9 @@ class GamemaleAutomation:
         for uid in user_ids:
             try:
                 url = f"https://www.gamemale.com/space-uid-{uid}.html"
-                if self.session.head(url, allow_redirects=True).status_code == 200:
+                if self.session.head(url, allow_redirects=True, timeout=10).status_code == 200:
                     success += 1
-                time.sleep(1)
+                time.sleep(0.5)
             except: pass
         print(f"  ✅ 空间访问: {success}/{len(user_ids)} 成功")
         print("::endgroup::")
@@ -596,7 +602,7 @@ class GamemaleAutomation:
             except Exception as e:
                 print(f"❌ 对 UID: {uid} 打招呼时发生异常: {e}")
             finally:
-                time.sleep(random.uniform(2, 4))
+                time.sleep(random.uniform(1, 2))
         
         print(f"📊 打招呼完成: {success_count}/{len(user_ids)} 成功")
         print("::endgroup::")
