@@ -264,13 +264,16 @@ class GamemaleAutomation:
             test_url = 'https://www.gamemale.com/home.php?mod=space&do=profile'
             response = self.session.get(test_url, allow_redirects=False, timeout=15)
 
-            if response.status_code == 200 and '登录' not in response.text:
-                # 如果提供了用户名，则额外验证用户名是否存在于页面中
-                if username and username.lower() in response.text.lower():
+            if response.status_code == 200:
+                text = response.text
+                # 已登录的多种判断条件
+                if '我的资料' in text or 'spacecp' in text:
                     return True
-                # 如果没有提供用户名，则检查通用登录标识
-                elif '我的资料' in response.text:
+                if username and username.lower() in text.lower():
                     return True
+                # 302跳转到登录页说明Cookie失效
+            if response.status_code == 302:
+                return False
             return False
         except Exception as e:
             print(f"::warning::Cookie登录验证过程中出错: {e}")
@@ -316,6 +319,13 @@ class GamemaleAutomation:
                     error_match = re.search(r'<!\[CDATA\[(.*?)(?:<script|\]\])', login_response.text)
                     raise ValueError(error_match.group(1).strip() if error_match else "未知登录错误")
             
+            except ValueError as e:
+                if str(e) == "ALREADY_LOGGED_IN":
+                    print("✅ Cookie仍有效，密码登录步骤跳过。")
+                    return True
+                print(f"登录尝试失败: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(random.uniform(1, 2))
             except Exception as e:
                 print(f"登录尝试失败: {e}")
                 if attempt < max_retries - 1:
@@ -329,11 +339,13 @@ class GamemaleAutomation:
         login_popup_url = 'https://www.gamemale.com/member.php?mod=logging&action=login&infloat=yes&handlekey=login&inajax=1'
         response = self._send_request('GET', login_popup_url, headers=ajax_headers)
         
-        print(f"[DEBUG] 登录弹窗响应状态码: {response.status_code}")
-        print(f"[DEBUG] 响应前500字符: {response.text[:500]}")
+        # 若弹窗返回的是"已登录成功"页面（Cookie仍有效），直接视为登录成功
+        if 'succeedhandle_login' in response.text or '欢迎您回来' in response.text:
+            print("✅ 检测到已登录状态（Cookie有效），跳过密码登录流程。")
+            raise ValueError("ALREADY_LOGGED_IN")
         html_content_match = re.search(r'<!\[CDATA\[(.*)\]\]>', response.text, re.DOTALL)
         if not html_content_match:
-            print(f"[DEBUG] 未找到CDATA，完整响应({len(response.text)}字符): {response.text[:2000]}")
+            print(f"[DEBUG] 未找到CDATA，响应({len(response.text)}字符): {response.text[:2000]}")
             raise ValueError("无法从登录弹窗响应中提取HTML内容。")
         html_content = html_content_match.group(1)
 
