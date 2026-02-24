@@ -450,10 +450,20 @@ class GamemaleAutomation:
         print("🔄 执行任务: 震惊互动")
         successful_uids, processed_uids = interact_with_blogs_regex(self.session, 10)
         task_results["震惊互动"] = len(successful_uids) > 0
-        
-        if processed_uids:
-            # 根据要求，只对3个用户进行后续操作
-            target_uids = processed_uids[:3]
+
+        # 独立获取用于空间访问和打招呼的UID列表
+        # 优先用震惊互动处理过的UID，不足3个时从论坛用户列表补充
+        target_uids = list(dict.fromkeys(processed_uids))[:3]  # 去重取前3
+        if len(target_uids) < 3:
+            print(f"ℹ️ 从震惊互动获取到 {len(target_uids)} 个UID，尝试从论坛补充...")
+            extra_uids = self._get_recent_user_ids(limit=10)
+            for uid in extra_uids:
+                if uid not in target_uids:
+                    target_uids.append(uid)
+                if len(target_uids) >= 3:
+                    break
+
+        if target_uids:
             print(f"选择 {len(target_uids)} 个用户进行空间访问和打招呼: {target_uids}")
             
             print("🔄 执行任务: 空间访问")
@@ -461,6 +471,10 @@ class GamemaleAutomation:
             
             print("🔄 执行任务: 打招呼")
             task_results["打招呼"] = self.quick_poke_users(target_uids)
+        else:
+            print("⚠️ 未能获取到任何用户UID，跳过空间访问和打招呼。")
+            task_results["空间访问"] = False
+            task_results["打招呼"] = False
 
         print("🔄 收集统计信息")
         user_credits, exchange_result = self.get_user_credits_and_exchange()
@@ -539,6 +553,27 @@ class GamemaleAutomation:
             return False
         finally:
             print("::endgroup::")
+
+    def _get_recent_user_ids(self, limit=10):
+        """从论坛最近活跃用户列表获取UID，用于空间访问和打招呼的备用来源"""
+        uids = []
+        try:
+            # 从论坛在线用户或最近发帖列表抓取UID
+            url = 'https://www.gamemale.com/home.php?mod=space&do=blog&view=all&page=1'
+            response = self._send_request('GET', url)
+            # 从日志列表页提取作者UID
+            matches = re.findall(r'blog-(\d+)-\d+\.html', response.text)
+            seen = set()
+            for uid in matches:
+                if uid not in seen:
+                    seen.add(uid)
+                    uids.append(uid)
+                if len(uids) >= limit:
+                    break
+            print(f"ℹ️ 从论坛获取到 {len(uids)} 个备用UID")
+        except Exception as e:
+            print(f"⚠️ 获取备用UID失败: {e}")
+        return uids
 
     def quick_visit_spaces(self, user_ids):
         """快速空间访问"""
