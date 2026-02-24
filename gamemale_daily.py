@@ -109,7 +109,7 @@ def interact_with_blogs_regex(session, target_interactions=10, max_pages_to_scan
         try:
             base_blog_list_url = 'https://www.gamemale.com/home.php?mod=space&do=blog&view=all'
             current_url = f"{base_blog_list_url}&page={page_num}"
-            response = session.get(current_url, timeout=15)
+            response = session.get(current_url, timeout=30)
             response.raise_for_status()
             
             href_matches = re.findall(r'href="([^"]*blog-\d+-\d+\.html[^"]*)"', response.text)
@@ -136,7 +136,7 @@ def interact_with_blogs_regex(session, target_interactions=10, max_pages_to_scan
                     uid = uid_match.group(1)
                     processed_user_ids.add(uid)
                     
-                    page_response = session.get(full_url, timeout=15)
+                    page_response = session.get(full_url, timeout=30)
                     page_response.raise_for_status()
                     page_text = page_response.text
                     
@@ -155,7 +155,7 @@ def interact_with_blogs_regex(session, target_interactions=10, max_pages_to_scan
                         click_url = "https://www.gamemale.com/" + click_url.lstrip('/')
 
                     ajax_headers = {'Referer': full_url, 'X-Requested-With': 'XMLHttpRequest'}
-                    click_response = session.get(click_url, headers=ajax_headers, timeout=15)
+                    click_response = session.get(click_url, headers=ajax_headers, timeout=30)
                     response_text = click_response.text.strip()
 
                     if 'succeed' in response_text or '表态成功' in response_text:
@@ -210,19 +210,27 @@ class GamemaleAutomation:
             'Referer': 'https://www.gamemale.com/forum.php',
         })
     
-    def _send_request(self, method, url, **kwargs):
-        """统一的请求发送方法，包含错误处理和日志记录"""
-        kwargs.setdefault('timeout', 20)
-        try:
-            response = self.session.request(method, url, **kwargs)
-            response.raise_for_status()
-            return response
-        except requests.RequestException as e:
-            if e.response is not None:
-                print(f"请求失败: {url}, 状态码: {e.response.status_code}")
-            else:
-                print(f"请求失败: {url}, 错误: {e}")
-            raise
+    def _send_request(self, method, url, max_retries=2, **kwargs):
+        """统一的请求发送方法，包含错误处理、超时重试"""
+        kwargs.setdefault('timeout', 30)
+        last_exc = None
+        for attempt in range(max_retries + 1):
+            try:
+                response = self.session.request(method, url, **kwargs)
+                response.raise_for_status()
+                return response
+            except requests.exceptions.Timeout as e:
+                last_exc = e
+                print(f"⚠️ 请求超时 (第{attempt+1}次): {url}")
+                if attempt < max_retries:
+                    time.sleep(2)
+            except requests.RequestException as e:
+                if e.response is not None:
+                    print(f"请求失败: {url}, 状态码: {e.response.status_code}")
+                else:
+                    print(f"请求失败: {url}, 错误: {e}")
+                raise
+        raise last_exc
 
     def login(self):
         """统一的登录管理"""
@@ -262,7 +270,7 @@ class GamemaleAutomation:
 
         try:
             test_url = 'https://www.gamemale.com/home.php?mod=space&do=profile'
-            response = self.session.get(test_url, allow_redirects=False, timeout=15)
+            response = self.session.get(test_url, allow_redirects=False, timeout=30)
 
             if response.status_code == 200:
                 text = response.text
@@ -583,7 +591,7 @@ class GamemaleAutomation:
         for uid in user_ids:
             try:
                 url = f"https://www.gamemale.com/space-uid-{uid}.html"
-                if self.session.head(url, allow_redirects=True, timeout=10).status_code == 200:
+                if self.session.head(url, allow_redirects=True, timeout=20).status_code == 200:
                     success += 1
                 time.sleep(0.5)
             except: pass
